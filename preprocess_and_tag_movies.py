@@ -1,33 +1,61 @@
 import pandas as pd
 from tqdm import tqdm
-from mood_classifier import get_mood_from_plot
+from nltk.sentiment import SentimentIntensityAnalyzer
 
-def load_and_tag_movies(csv_path='netflix_data.csv', output_path='tagged_movies.csv'):
+def get_mood_from_plot_vader(plot):
+    sia = SentimentIntensityAnalyzer()
+    score = sia.polarity_scores(plot)['compound']
+    if score >= 0.5:
+        return 'uplifting'
+    elif score <= -0.5:
+        return 'dark'
+    else:
+        return 'neutral'
+def load_and_tag_movies(csv_path='netflix_data.csv', output_path='tagged_movies_vader.csv'):
     df = pd.read_csv(csv_path)
-    df = df[df['type'].str.lower() == 'movie']
+
+    # Keep only rows with 'Movie' or 'TV Show' type
+    df = df[df['type'].str.lower().isin(['movie', 'tv show'])]
+
+    # Drop rows without description
     df = df.dropna(subset=['description'])
-    df = df[['title', 'listed_in', 'description', 'release_year', 'duration', 'director']].copy()
+
+    # Keep only required columns including 'type' and 'listed_in'
+    df = df[['title', 'listed_in', 'description', 'release_year', 'duration', 'director', 'type','country']].copy()
+
+    # Rename columns (keep 'listed_in' intact)
     df.rename(columns={
-        'listed_in': 'genre',
         'description': 'plot',
         'release_year': 'year'
     }, inplace=True)
+
+    # Set language as unknown for now
     df['language'] = 'Unknown'
 
-    mood_tags_list = []
+    # Mood tagging
+    print("Tagging moods with VADER (sentiment analysis):")
+    from nltk.sentiment import SentimentIntensityAnalyzer
+    sia = SentimentIntensityAnalyzer()
+    from tqdm import tqdm
+    tqdm.pandas()
 
-    print("Tagging moods with progress:")
-    for plot in tqdm(df['plot'], total=len(df)):
-        mood = get_mood_from_plot(plot)
-        mood_tags_list.append(mood)
+    def get_mood_from_plot_vader(plot):
+        score = sia.polarity_scores(plot)['compound']
+        if score >= 0.5:
+            return 'uplifting'
+        elif score <= -0.5:
+            return 'dark'
+        else:
+            return 'neutral'
 
-    df['mood_tags'] = mood_tags_list
+    df['mood_tags'] = df['plot'].progress_apply(get_mood_from_plot_vader)
+
+    # Save
     df.to_csv(output_path, index=False)
-
-    print(f"Tagging complete! Saved to {output_path}")
+    print(f"Saved tagged movies to {output_path}")
     return df
 
-# ADD THIS
-if __name__ == '__main__':
-    load_and_tag_movies()
 
+if __name__ == '__main__':
+    # For example, to tag movies only:
+    load_and_tag_movies()
