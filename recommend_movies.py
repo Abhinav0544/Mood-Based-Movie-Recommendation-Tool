@@ -1,106 +1,50 @@
-# import pandas as pd
-# import requests
-# from mood_classifier import get_mood_from_plot
-
-# TMDB_API_KEY = "bf52e37b5b0680c7b23be082af3bbdc3"
-
-# def fetch_tmdb_poster(title, year=None):
-#     """Search TMDB and return poster URL"""
-#     try:
-#         query = f"https://api.themoviedb.org/3/search/movie"
-#         params = {
-#             "api_key": TMDB_API_KEY,
-#             "query": title,
-#             "year": year,
-#         }
-#         res = requests.get(query, params=params)
-#         data = res.json()
-#         if data["results"]:
-#             poster_path = data["results"][0].get("poster_path")
-#             if poster_path:
-#                 return f"https://image.tmdb.org/t/p/w500{poster_path}"
-#     except:
-#         pass
-#     return None
-
-# def load_and_tag_movies(csv_path='netflix_data.csv'):
-#     df = pd.read_csv(csv_path)
-
-#     # Only keep movies
-#     df = df[df['type'].str.lower() == 'movie']
-#     df = df.dropna(subset=['description'])
-
-#     # Select and rename columns
-#     df = df[['title', 'listed_in', 'description', 'release_year', 'duration', 'director']].copy()
-#     df.rename(columns={
-#         'listed_in': 'genre',
-#         'description': 'plot',
-#         'release_year': 'year'
-#     }, inplace=True)
-
-#     # Add placeholder language
-#     df['language'] = 'Unknown'
-
-#     # Add mood tags
-#     df['mood_tags'] = df['plot'].apply(get_mood_from_plot)
-
-#     # Add poster URLs
-#     df['poster_url'] = df.apply(lambda row: fetch_tmdb_poster(row['title'], row['year']), axis=1)
-
-#     return df
-
-# def recommend_movies(df, mood=None, genre=None, language=None):
-#     filtered = df.copy()
-
-#     if mood:
-#         filtered = filtered[filtered['mood_tags'].str.contains(mood, case=False, na=False)]
-#     if genre:
-#         filtered = filtered[filtered['genre'].str.contains(genre, case=False, na=False)]
-#     if language and 'language' in filtered.columns:
-#         filtered = filtered[filtered['language'].str.contains(language, case=False, na=False)]
-
-#     return filtered[['title', 'genre', 'language', 'mood_tags', 'plot', 'poster_url']]
-
 # recommend_movies.py
 
 import pandas as pd
+import numpy as np
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
-def load_and_tag_movies(csv_path='tagged_movies.csv'):
-    return pd.read_csv(csv_path)
+DATA_PATH = 'data/'
+TOP_N = 10
 
-def recommend_movies(df, mood=None, genre=None, language=None):
-    filtered = df.copy()
+# Load preprocessed data
+df = pd.read_pickle(DATA_PATH + 'movies_df.pkl')
+movie_embeddings = np.load(DATA_PATH + 'movie_embeddings.npy')
 
-    if mood:
-        filtered = filtered[filtered['mood_tags'].str.contains(mood, case=False, na=False)]
+# Load model once
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def recommend_movies(user_mood_prompt, genre=None, language=None, country=None, content_type=None, threshold=0.75, top_n=TOP_N):
+
+    user_embedding = model.encode([user_mood_prompt])
+    similarities = cosine_similarity(user_embedding, movie_embeddings)[0]
+
+    df['similarity'] = similarities
+    df_filtered = df.copy()
+
+    if content_type:
+        content_type = content_type.strip().lower()
+        df_filtered = df_filtered[df_filtered['type'].str.lower() == content_type]
+
     if genre:
-        filtered = filtered[filtered['genre'].str.contains(genre, case=False, na=False)]
-    if language and 'language' in filtered.columns:
-        filtered = filtered[filtered['language'].str.contains(language, case=False, na=False)]
+        # Split comma-separated genres, strip spaces, lowercase
+        genres = [g.strip().lower() for g in genre.split(',')]
+        # Create regex pattern for OR match
+        pattern = '|'.join(genres)
+        df_filtered = df_filtered[df_filtered['listed_in'].str.lower().str.contains(pattern, regex=True, na=False)]
 
-    return filtered[['title', 'genre', 'language', 'mood_tags', 'plot', 'poster_url']]
+    if language:
+        language = language.strip().lower()
+        df_filtered = df_filtered[df_filtered['language'].str.lower().str.contains(language, na=False)]
 
-# TMDB Poster API (used only in tagging step)
-import requests
-import os
-from dotenv import load_dotenv
-load_dotenv()
+    if country:
+        country = country.strip().lower()
+        df_filtered = df_filtered[df_filtered['country'].str.lower().str.contains(country, na=False)]
 
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")  # safer than hardcoding
+    # Filter by minimum similarity score threshold
+    df_filtered = df_filtered[df_filtered['similarity'] >= threshold]
 
-def fetch_tmdb_poster(title, year):
-    try:
-        url = f"https://api.themoviedb.org/3/search/movie"
-        params = {
-            "api_key": TMDB_API_KEY,
-            "query": title,
-            "year": year
-        }
-        response = requests.get(url, params=params)
-        data = response.json()
-        if data["results"]:
-            poster_path = data["results"][0].get("poster_path")
-            return f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else ""
-    except:
-        pass
-    return ""
+    top_recs = df_filtered.sort_values(by='similarity', ascending=False).head(top_n)
+
+    return top_recs[['title', 'listed_in', 'plot', 'year', 'duration', 'director', 'language', 'country', 'similarity']]
